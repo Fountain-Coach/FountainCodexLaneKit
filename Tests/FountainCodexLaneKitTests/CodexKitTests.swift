@@ -10,6 +10,7 @@ final class CodexKitTests: XCTestCase {
         XCTAssertEqual(CodexManagedLoginFlow.browser.rawValue, "chatgpt")
         XCTAssertEqual(CodexManagedLoginFlow.deviceCode.rawValue, "chatgptDeviceCode")
         XCTAssertFalse(CodexAuthState(authMode: nil, accountType: nil, planType: nil, email: nil, requiresOpenAIAuth: true).authenticated)
+        XCTAssertTrue(CodexAuthState(authMode: "chatgpt", accountType: "chatgpt", planType: "team", email: nil, requiresOpenAIAuth: true).authenticated)
         await instrument.shutdown()
     }
 

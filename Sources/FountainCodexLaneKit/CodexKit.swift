@@ -203,8 +203,10 @@ public struct CodexAuthState: Codable, Equatable, Sendable {
         self.requiresOpenAIAuth = requiresOpenAIAuth
     }
 
+    /// `requiresOpenAIAuth` is an upstream account/read field for the direct OpenAI API boundary. It is not the
+    /// managed ChatGPT login state. A ChatGPT account therefore remains authenticated even when that field is true.
     public var authenticated: Bool {
-        authMode == "chatgpt" && !requiresOpenAIAuth
+        authMode == "chatgpt" && (accountType == nil || accountType == "chatgpt")
     }
 }
 
@@ -300,7 +302,9 @@ public actor CodexKitInstrument {
             accountType: string(account?["type"]),
             planType: string(account?["planType"]),
             email: string(account?["email"]),
-            requiresOpenAIAuth: bool(result["requiresOpenaiAuth"]) ?? bool(result["requiresOpenAIAuth"]) ?? true)
+            // This field describes the separate OpenAI API account requirement. Do not reinterpret it as a missing
+            // managed ChatGPT login; the account type is the authority for the managed lane.
+            requiresOpenAIAuth: bool(result["requiresOpenaiAuth"]) ?? bool(result["requiresOpenAIAuth"]) ?? false)
     }
 
     public func startManagedLogin(flow: CodexManagedLoginFlow, correlationID: String = UUID().uuidString, executionID: String = UUID().uuidString) async throws -> CodexLoginChallenge {
