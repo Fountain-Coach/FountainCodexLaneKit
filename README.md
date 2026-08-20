@@ -21,7 +21,8 @@ dependencies: [
 ]
 ```
 
-This first release is a transport and instrument foundation. The exact Codex app-server method inventory must be
+The `v0.1.1` release performs the required app-server `initialize` / `initialized` handshake and uses Codex's JSONL
+wire shape. The exact Codex app-server method inventory must be
 pinned and reviewed before a consumer adds typed account, thread, turn, or approval operations.
 
 ## FCIS-KIT boundary

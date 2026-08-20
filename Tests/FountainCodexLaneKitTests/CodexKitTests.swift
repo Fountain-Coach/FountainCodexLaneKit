@@ -7,7 +7,7 @@ final class CodexKitTests: XCTestCase {
         let executable = URL(fileURLWithPath: "/bin/sh")
         let descriptor = CodexRuntimeDescriptor(executableURL: executable, protocolRevision: "test-protocol", runtimeDigest: "sha256:test", codexHome: URL(fileURLWithPath: "/tmp/codex-kit-test"))
         let instrument = CodexKitInstrument(descriptor: descriptor)
-        try await instrument.start()
+        try await instrument.start(initialize: false)
         let request = MIDI2LaneHandshake(operation: MIDI2LaneHandshake.topic, operationVersion: "1", role: "llm.invoke", instrumentID: "lane.codex.session", laneID: "codex", sessionID: "test-session", scope: "test", idempotencyKey: "test-key")
         let result = try await instrument.handshake(request)
         XCTAssertEqual(MIDI2LaneHandshake.responseTopic, "reframe/lane.handshake.result")
@@ -32,7 +32,7 @@ final class CodexKitTests: XCTestCase {
         let descriptor = CodexRuntimeDescriptor(executableURL: URL(fileURLWithPath: "/bin/sh"), protocolRevision: "v1", runtimeDigest: "sha256:test", codexHome: URL(fileURLWithPath: "/tmp/codex-kit-test"))
         let instrument = CodexKitInstrument(descriptor: descriptor)
         let stream = await instrument.events()
-        try await instrument.start()
+        try await instrument.start(initialize: false)
         _ = try await instrument.handshake(MIDI2LaneHandshake(operation: MIDI2LaneHandshake.topic, operationVersion: "1", role: "llm.invoke", instrumentID: "lane.codex.session", laneID: "codex", sessionID: "s", scope: "test", idempotencyKey: "k"))
         await instrument.shutdown()
         var sequences: [UInt64] = []

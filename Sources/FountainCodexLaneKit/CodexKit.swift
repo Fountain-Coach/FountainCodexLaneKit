@@ -205,12 +205,12 @@ public actor CodexKitInstrument {
         return stream
     }
 
-    public func start() async throws {
+    public func start(initialize: Bool = true) async throws {
         guard process == nil else { throw CodexKitError.alreadyStarted }
         try descriptor.validate()
         let child = Process()
         child.executableURL = descriptor.executableURL
-        child.arguments = ["app-server"]
+        child.arguments = ["app-server", "--stdio"]
         child.environment = descriptor.childEnvironment()
         let childInput = Pipe()
         let childOutput = Pipe()
@@ -222,6 +222,19 @@ public actor CodexKitInstrument {
         input = childInput.fileHandleForWriting
         emit(operation: "codex.instrument.start", phase: .discovered, payload: ["protocolRevision": .string(descriptor.protocolRevision), "runtimeDigest": .string(descriptor.runtimeDigest)])
         Task { [weak self] in await self?.readOutput(childOutput.fileHandleForReading) }
+        guard initialize else { return }
+        _ = try await request(
+            method: "initialize",
+            params: ["clientInfo": .object([
+                "name": .string("fountain_coach_codex_kit"),
+                "title": .string("Fountain Coach CodexKit"),
+                "version": .string("0.1.1")
+            ])],
+            operation: "codex.protocol.initialize",
+            correlationID: "codex-initialize",
+            executionID: "codex-initialize"
+        )
+        try writeNotification(method: "initialized", params: [:])
     }
 
     public func handshake(_ request: MIDI2LaneHandshake) async throws -> MIDI2LaneHandshakeResult {
@@ -243,7 +256,8 @@ public actor CodexKitInstrument {
             try await withCheckedThrowingContinuation { continuation in
                 continuations[id] = continuation
                 do {
-                    let message: [String: JSONValue] = ["jsonrpc": .string("2.0"), "id": .string(id), "method": .string(method), "params": .object(params)]
+                    // Codex app-server uses JSON-RPC semantics but omits the jsonrpc header on its JSONL wire.
+                    let message: [String: JSONValue] = ["id": .string(id), "method": .string(method), "params": .object(params)]
                     let data = try JSONEncoder().encode(message)
                     input.write(data + Data([0x0A]))
                 } catch { continuation.resume(throwing: error) }
@@ -251,6 +265,12 @@ public actor CodexKitInstrument {
         }, onCancel: { [weak self] in Task { await self?.cancelRequest(id: id, operation: operation, correlationID: correlationID, executionID: executionID) } })
         emit(operation: operation, correlationID: correlationID, executionID: executionID, phase: .settled, method: method, payload: result)
         return result
+    }
+
+    private func writeNotification(method: String, params: [String: JSONValue]) throws {
+        guard let input else { throw CodexKitError.notStarted }
+        let message: [String: JSONValue] = ["method": .string(method), "params": .object(params)]
+        input.write(try JSONEncoder().encode(message) + Data([0x0A]))
     }
 
     public func shutdown() {
