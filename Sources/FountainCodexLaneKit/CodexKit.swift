@@ -179,6 +179,90 @@ public struct MIDI2LaneHandshakeResult: Codable, Equatable, Sendable {
     }
 }
 
+/// The authentication modes understood by the Codex app-server boundary.
+/// API-key login is deliberately not represented here: Fountain Coach uses the
+/// managed ChatGPT session owned by the app-server.
+public enum CodexManagedLoginFlow: String, Codable, Sendable {
+    case browser = "chatgpt"
+    case deviceCode = "chatgptDeviceCode"
+}
+
+/// Redacted account state suitable for MIDI2 and host UI projection.
+public struct CodexAuthState: Codable, Equatable, Sendable {
+    public let authMode: String?
+    public let accountType: String?
+    public let planType: String?
+    public let email: String?
+    public let requiresOpenAIAuth: Bool
+
+    public init(authMode: String?, accountType: String?, planType: String?, email: String?, requiresOpenAIAuth: Bool) {
+        self.authMode = authMode
+        self.accountType = accountType
+        self.planType = planType
+        self.email = email
+        self.requiresOpenAIAuth = requiresOpenAIAuth
+    }
+
+    public var authenticated: Bool {
+        authMode == "chatgpt" && !requiresOpenAIAuth
+    }
+}
+
+/// The non-secret result of a managed login start operation.
+public struct CodexLoginChallenge: Codable, Equatable, Sendable {
+    public let flow: CodexManagedLoginFlow
+    public let loginID: String?
+    public let authURL: String?
+    public let verificationURL: String?
+    public let userCode: String?
+
+    public init(flow: CodexManagedLoginFlow, loginID: String?, authURL: String?, verificationURL: String?, userCode: String?) {
+        self.flow = flow
+        self.loginID = loginID
+        self.authURL = authURL
+        self.verificationURL = verificationURL
+        self.userCode = userCode
+    }
+}
+
+/// The dedicated MIDI2 authentication instrument over an admitted Codex
+/// app-server session. It owns no credentials; the app-server owns managed
+/// ChatGPT token persistence and refresh.
+public struct CodexAuthInstrument: Sendable {
+    public static let namespace = "codex.auth"
+    private let session: CodexKitInstrument
+
+    public init(session: CodexKitInstrument) {
+        self.session = session
+    }
+
+    public func read(refreshToken: Bool = false, correlationID: String = UUID().uuidString, executionID: String = UUID().uuidString) async throws -> CodexAuthState {
+        try await session.authState(refreshToken: refreshToken, correlationID: correlationID, executionID: executionID)
+    }
+
+    public func startManagedLogin(flow: CodexManagedLoginFlow, correlationID: String = UUID().uuidString, executionID: String = UUID().uuidString) async throws -> CodexLoginChallenge {
+        try await session.startManagedLogin(flow: flow, correlationID: correlationID, executionID: executionID)
+    }
+
+    public func cancel(loginID: String, correlationID: String = UUID().uuidString, executionID: String = UUID().uuidString) async throws {
+        _ = try await session.request(
+            method: "account/login/cancel",
+            params: ["loginId": .string(loginID)],
+            operation: "(Self.namespace).login.cancel",
+            correlationID: correlationID,
+            executionID: executionID)
+    }
+
+    public func logout(correlationID: String = UUID().uuidString, executionID: String = UUID().uuidString) async throws {
+        _ = try await session.request(
+            method: "account/logout",
+            params: [:],
+            operation: "(Self.namespace).logout",
+            correlationID: correlationID,
+            executionID: executionID)
+    }
+}
+
 /// Product-neutral Codex app-server boundary and reusable MIDI2 lane instrument.
 /// It never discovers a runtime through PATH/shell and never persists or emits credentials.
 public actor CodexKitInstrument {
@@ -197,6 +281,46 @@ public actor CodexKitInstrument {
         self.descriptor = descriptor
         self.instrumentID = instrumentID
         self.laneID = laneID
+    }
+
+    public nonisolated var auth: CodexAuthInstrument { CodexAuthInstrument(session: self) }
+
+    /// Read the app-server's redacted authentication state. Raw tokens never
+    /// enter the returned value or the MIDI2 event payload.
+    public func authState(refreshToken: Bool = false, correlationID: String = UUID().uuidString, executionID: String = UUID().uuidString) async throws -> CodexAuthState {
+        let result = try await request(
+            method: "account/read",
+            params: ["refreshToken": .bool(refreshToken)],
+            operation: "(CodexAuthInstrument.namespace).status",
+            correlationID: correlationID,
+            executionID: executionID)
+        let account = object(result["account"])
+        return CodexAuthState(
+            authMode: string(account?["type"]),
+            accountType: string(account?["type"]),
+            planType: string(account?["planType"]),
+            email: string(account?["email"]),
+            requiresOpenAIAuth: bool(result["requiresOpenaiAuth"]) ?? bool(result["requiresOpenAIAuth"]) ?? true)
+    }
+
+    public func startManagedLogin(flow: CodexManagedLoginFlow, correlationID: String = UUID().uuidString, executionID: String = UUID().uuidString) async throws -> CodexLoginChallenge {
+        var params: [String: JSONValue] = ["type": .string(flow.rawValue)]
+        if flow == .browser {
+            params["useHostedLoginSuccessPage"] = .bool(true)
+            params["appBrand"] = .string("codex")
+        }
+        let result = try await request(
+            method: "account/login/start",
+            params: params,
+            operation: "(CodexAuthInstrument.namespace).login.start",
+            correlationID: correlationID,
+            executionID: executionID)
+        return CodexLoginChallenge(
+            flow: flow,
+            loginID: string(result["loginId"]),
+            authURL: string(result["authUrl"]),
+            verificationURL: string(result["verificationUrl"]),
+            userCode: string(result["userCode"]))
     }
 
     public func events() -> AsyncStream<CodexKitEvent> {
@@ -306,5 +430,20 @@ public actor CodexKitInstrument {
     private func emit(operation: String, correlationID: String = "", executionID: String = "", phase: CodexKitPhase, method: String? = nil, payload: [String: JSONValue] = [:]) {
         nextSequence += 1
         eventContinuation?.yield(CodexKitEvent(operation: operation, correlationID: correlationID, executionID: executionID, sequence: nextSequence, phase: phase, method: method, payload: payload))
+    }
+
+    private func object(_ value: JSONValue?) -> [String: JSONValue]? {
+        guard case .object(let value)? = value else { return nil }
+        return value
+    }
+
+    private func string(_ value: JSONValue?) -> String? {
+        guard case .string(let value)? = value else { return nil }
+        return value
+    }
+
+    private func bool(_ value: JSONValue?) -> Bool? {
+        guard case .bool(let value)? = value else { return nil }
+        return value
     }
 }

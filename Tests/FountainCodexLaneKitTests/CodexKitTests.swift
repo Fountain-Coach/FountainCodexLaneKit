@@ -3,6 +3,16 @@ import XCTest
 @testable import FountainCodexLaneKit
 
 final class CodexKitTests: XCTestCase {
+    func testManagedAuthInstrumentUsesChatGPTFlowAndNeverAPIKeyMode() async throws {
+        let descriptor = CodexRuntimeDescriptor(executableURL: URL(fileURLWithPath: "/bin/sh"), protocolRevision: "v1", runtimeDigest: "sha256:test", codexHome: URL(fileURLWithPath: "/tmp/codex-kit-auth-test"))
+        let instrument = CodexKitInstrument(descriptor: descriptor)
+        XCTAssertEqual(CodexAuthInstrument.namespace, "codex.auth")
+        XCTAssertEqual(CodexManagedLoginFlow.browser.rawValue, "chatgpt")
+        XCTAssertEqual(CodexManagedLoginFlow.deviceCode.rawValue, "chatgptDeviceCode")
+        XCTAssertFalse(CodexAuthState(authMode: nil, accountType: nil, planType: nil, email: nil, requiresOpenAIAuth: true).authenticated)
+        await instrument.shutdown()
+    }
+
     func testLaneHandshakeUsesExistingIDLTopicsAndDoesNotClaimCredentialVerification() async throws {
         let executable = URL(fileURLWithPath: "/bin/sh")
         let descriptor = CodexRuntimeDescriptor(executableURL: executable, protocolRevision: "test-protocol", runtimeDigest: "sha256:test", codexHome: URL(fileURLWithPath: "/tmp/codex-kit-test"))
