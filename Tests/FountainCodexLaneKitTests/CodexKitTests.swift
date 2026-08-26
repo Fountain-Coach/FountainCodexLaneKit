@@ -14,6 +14,31 @@ final class CodexKitTests: XCTestCase {
         await instrument.shutdown()
     }
 
+    func testTransportTerminationSettlesPendingRequest() async throws {
+        let descriptor = CodexRuntimeDescriptor(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            protocolRevision: "test",
+            runtimeDigest: "sha256:test",
+            codexHome: URL(fileURLWithPath: "/tmp/codex-kit-test"))
+        let instrument = CodexKitInstrument(descriptor: descriptor)
+        try await instrument.start(initialize: false)
+
+        do {
+            _ = try await instrument.request(
+                method: "test/pending",
+                params: [:],
+                operation: "test.transport",
+                correlationID: "corr",
+                executionID: "exec")
+            XCTFail("expected transport termination")
+        } catch let error as CodexKitError {
+            guard case .transport = error else {
+                XCTFail("unexpected error: \(error)")
+                return
+            }
+        }
+    }
+
     func testLaneHandshakeUsesExistingIDLTopicsAndDoesNotClaimCredentialVerification() async throws {
         let executable = URL(fileURLWithPath: "/bin/sh")
         let descriptor = CodexRuntimeDescriptor(executableURL: executable, protocolRevision: "test-protocol", runtimeDigest: "sha256:test", codexHome: URL(fileURLWithPath: "/tmp/codex-kit-test"))

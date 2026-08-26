@@ -9,6 +9,7 @@ public enum CodexKitError: Error, Equatable, Sendable {
     case terminated(Int32)
     case invalidResponse
     case remote(String)
+    case transport(String)
     case cancelled
 }
 
@@ -345,6 +346,9 @@ public actor CodexKitInstrument {
         child.standardInput = childInput
         child.standardOutput = childOutput
         child.standardError = Pipe()
+        child.terminationHandler = { [weak self] process in
+            Task { await self?.processDidTerminate(status: process.terminationStatus) }
+        }
         try child.run()
         process = child
         input = childInput.fileHandleForWriting
@@ -428,7 +432,30 @@ public actor CodexKitInstrument {
                     emit(operation: "codex.protocol.event", phase: .streaming, method: method, payload: message)
                 }
             }
-        } catch { }
+            processDidTerminate(status: -1, detail: "Codex app-server output closed.")
+        } catch {
+            processDidTerminate(status: -1, detail: error.localizedDescription)
+        }
+    }
+
+    private func processDidTerminate(status: Int32) {
+        processDidTerminate(status: status, detail: "Codex app-server exited (status \(status)).")
+    }
+
+    private func processDidTerminate(status: Int32, detail: String) {
+        guard !continuations.isEmpty || process != nil else { return }
+        let pending = continuations
+        continuations.removeAll()
+        process = nil
+        input = nil
+        let error = CodexKitError.transport(detail)
+        for continuation in pending.values {
+            continuation.resume(throwing: error)
+        }
+        emit(operation: "codex.instrument.transport", phase: .failed,
+             payload: ["status": .number(Double(status)), "detail": .string(detail)])
+        eventContinuation?.finish()
+        eventContinuation = nil
     }
 
     private func emit(operation: String, correlationID: String = "", executionID: String = "", phase: CodexKitPhase, method: String? = nil, payload: [String: JSONValue] = [:]) {
