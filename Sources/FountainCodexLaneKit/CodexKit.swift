@@ -386,7 +386,7 @@ public actor CodexKitInstrument {
         emit(operation: operation, correlationID: correlationID, executionID: executionID, phase: .running, method: method)
         let result = try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
-                continuations[id] = continuation
+                continuations[requestIDKey(.string(id))!] = continuation
                 do {
                     // Codex app-server uses JSON-RPC semantics but omits the jsonrpc header on its JSONL wire.
                     let message: [String: JSONValue] = ["id": .string(id), "method": .string(method), "params": .object(params)]
@@ -397,6 +397,21 @@ public actor CodexKitInstrument {
         }, onCancel: { [weak self] in Task { await self?.cancelRequest(id: id, operation: operation, correlationID: correlationID, executionID: executionID) } })
         emit(operation: operation, correlationID: correlationID, executionID: executionID, phase: .settled, method: method, payload: result)
         return result
+    }
+
+    /// Interrupts one app-server turn. Cancellation is a protocol operation, not a local watchdog decision.
+    public func interrupt(
+        threadID: String,
+        turnID: String,
+        correlationID: String = UUID().uuidString,
+        executionID: String = UUID().uuidString
+    ) async throws {
+        _ = try await request(
+            method: "turn/interrupt",
+            params: ["threadId": .string(threadID), "turnId": .string(turnID)],
+            operation: "codex.protocol.turn.interrupt",
+            correlationID: correlationID,
+            executionID: executionID)
     }
 
     private func writeNotification(method: String, params: [String: JSONValue]) throws {
@@ -424,12 +439,15 @@ public actor CodexKitInstrument {
         do {
             for try await line in output.bytes.lines {
                 guard let data = line.data(using: .utf8), let message = try? JSONDecoder().decode([String: JSONValue].self, from: data) else { continue }
-                if case .string(let id)? = message["id"], let continuation = continuations.removeValue(forKey: id) {
+                if let idValue = message["id"], let id = requestIDKey(idValue), let continuation = continuations.removeValue(forKey: id) {
                     if case .object(let error)? = message["error"], case .string(let detail)? = error["message"] { continuation.resume(throwing: CodexKitError.remote(detail)) }
                     else if case .object(let result)? = message["result"] { continuation.resume(returning: result) }
                     else { continuation.resume(throwing: CodexKitError.invalidResponse) }
                 } else if case .string(let method)? = message["method"] {
                     emit(operation: "codex.protocol.event", phase: .streaming, method: method, payload: message)
+                    if let id = message["id"] {
+                        try? respondToServerRequest(id: id, method: method)
+                    }
                 }
             }
             processDidTerminate(status: -1, detail: "Codex app-server output closed.")
@@ -461,6 +479,41 @@ public actor CodexKitInstrument {
     private func emit(operation: String, correlationID: String = "", executionID: String = "", phase: CodexKitPhase, method: String? = nil, payload: [String: JSONValue] = [:]) {
         nextSequence += 1
         eventContinuation?.yield(CodexKitEvent(operation: operation, correlationID: correlationID, executionID: executionID, sequence: nextSequence, phase: phase, method: method, payload: payload))
+    }
+
+    private func requestIDKey(_ value: JSONValue) -> String? {
+        switch value {
+        case .string(let value): return "s:\(value)"
+        case .number(let value): return "n:\(value)"
+        default: return nil
+        }
+    }
+
+    private func respondToServerRequest(id: JSONValue, method: String) throws {
+        // Reframe's semantic turn is read-only and does not expose Codex tools, file edits, or interactive
+        // questions. These requests still require a JSON-RPC response or the app-server can leave the turn
+        // in progress indefinitely. Cancel the governed request explicitly; never ignore it or auto-approve it.
+        let result: JSONValue
+        switch method {
+        case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+            result = .object(["decision": .string("cancel")])
+        case "item/tool/requestUserInput":
+            result = .object(["answers": .object([:])])
+        default:
+            let error: [String: JSONValue] = [
+                "code": .number(-32601),
+                "message": .string("Reframe semantic client does not support server request \(method).")
+            ]
+            let message: [String: JSONValue] = ["id": id, "error": .object(error)]
+            let data = try JSONEncoder().encode(message)
+            guard let input else { throw CodexKitError.notStarted }
+            input.write(data + Data([0x0A]))
+            return
+        }
+        let message: [String: JSONValue] = ["id": id, "result": result]
+        let data = try JSONEncoder().encode(message)
+        guard let input else { throw CodexKitError.notStarted }
+        input.write(data + Data([0x0A]))
     }
 
     private func object(_ value: JSONValue?) -> [String: JSONValue]? {
