@@ -483,8 +483,12 @@ public actor CodexKitInstrument {
 
     private func requestIDKey(_ value: JSONValue) -> String? {
         switch value {
-        case .string(let value): return "s:\(value)"
-        case .number(let value): return "n:\(value)"
+        // Codex app-server emits numeric JSON-RPC ids even when the client sends a string id. JSON-RPC permits
+        // either scalar representation; the lane must correlate both representations to the same pending request.
+        case .string(let value): return "id:\(value)"
+        case .number(let value):
+            let normalized = value.rounded() == value ? String(Int(value)) : String(value)
+            return "id:\(normalized)"
         default: return nil
         }
     }
