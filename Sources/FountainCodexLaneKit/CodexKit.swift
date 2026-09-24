@@ -1,4 +1,9 @@
 import Foundation
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
 
 public enum CodexKitError: Error, Equatable, Sendable {
     case runtimeNotExecutable(URL)
@@ -461,16 +466,19 @@ public actor CodexKitInstrument {
     /// asynchronous without making the actor perform a blocking read: the blocking descriptor read lives on a
     /// utility queue and yields complete UTF-8 lines into the async stream consumed above.
     private nonisolated func outputLines(_ output: FileHandle) -> AsyncStream<String> {
-        AsyncStream { continuation in
+            AsyncStream { continuation in
             DispatchQueue.global(qos: .utility).async {
                 var buffer = Data()
                 while true {
-                    do {
-                        guard let chunk = try output.read(upToCount: 16 * 1024), !chunk.isEmpty else { break }
-                        buffer.append(chunk)
-                    } catch {
-                        break
-                    }
+                    var bytes = [UInt8](repeating: 0, count: 16 * 1024)
+                    let count: Int
+                    #if os(Linux)
+                    count = Glibc.read(output.fileDescriptor, &bytes, bytes.count)
+                    #else
+                    count = Darwin.read(output.fileDescriptor, &bytes, bytes.count)
+                    #endif
+                    guard count > 0 else { break }
+                    buffer.append(contentsOf: bytes.prefix(count))
                     while let newline = buffer.firstIndex(of: 0x0A) {
                         let line = buffer.prefix(upTo: newline)
                         buffer.removeSubrange(...newline)
