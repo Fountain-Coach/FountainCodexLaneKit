@@ -437,8 +437,16 @@ public actor CodexKitInstrument {
 
     private func readOutput(_ output: FileHandle) async {
         do {
-            for try await line in output.bytes.lines {
-                guard let data = line.data(using: .utf8), let message = try? JSONDecoder().decode([String: JSONValue].self, from: data) else { continue }
+            var buffer = Data()
+            while true {
+                let chunk = try output.read(upToCount: 4096) ?? Data()
+                guard !chunk.isEmpty else { break }
+                buffer.append(chunk)
+                while let newline = buffer.firstIndex(of: 0x0A) {
+                    let line = buffer.prefix(upTo: newline)
+                    buffer.removeSubrange(...newline)
+                    guard let data = String(decoding: line, as: UTF8.self).data(using: .utf8),
+                          let message = try? JSONDecoder().decode([String: JSONValue].self, from: data) else { continue }
                 if let idValue = message["id"], let id = requestIDKey(idValue), let continuation = continuations.removeValue(forKey: id) {
                     if case .object(let error)? = message["error"], case .string(let detail)? = error["message"] { continuation.resume(throwing: CodexKitError.remote(detail)) }
                     else if case .object(let result)? = message["result"] { continuation.resume(returning: result) }
@@ -448,6 +456,7 @@ public actor CodexKitInstrument {
                     if let id = message["id"] {
                         try? respondToServerRequest(id: id, method: method)
                     }
+                }
                 }
             }
             processDidTerminate(status: -1, detail: "Codex app-server output closed.")
