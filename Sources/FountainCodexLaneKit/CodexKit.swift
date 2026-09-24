@@ -437,8 +437,9 @@ public actor CodexKitInstrument {
 
     private func readOutput(_ output: FileHandle) async {
         do {
-            for try await line in output.bytes.lines {
-                guard let data = line.data(using: .utf8), let message = try? JSONDecoder().decode([String: JSONValue].self, from: data) else { continue }
+            for await line in outputLines(output) {
+                let data = Data(line.utf8)
+                guard let message = try? JSONDecoder().decode([String: JSONValue].self, from: data) else { continue }
                 if let idValue = message["id"], let id = requestIDKey(idValue), let continuation = continuations.removeValue(forKey: id) {
                     if case .object(let error)? = message["error"], case .string(let detail)? = error["message"] { continuation.resume(throwing: CodexKitError.remote(detail)) }
                     else if case .object(let result)? = message["result"] { continuation.resume(returning: result) }
@@ -453,6 +454,34 @@ public actor CodexKitInstrument {
             processDidTerminate(status: -1, detail: "Codex app-server output closed.")
         } catch {
             processDidTerminate(status: -1, detail: error.localizedDescription)
+        }
+    }
+
+    /// FileHandle.AsyncBytes is not available on the Linux staging toolchain. Keep the app-server wire reader
+    /// asynchronous without making the actor perform a blocking read: the blocking descriptor read lives on a
+    /// utility queue and yields complete UTF-8 lines into the async stream consumed above.
+    private nonisolated func outputLines(_ output: FileHandle) -> AsyncStream<String> {
+        AsyncStream { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                var buffer = Data()
+                while true {
+                    do {
+                        guard let chunk = try output.read(upToCount: 16 * 1024), !chunk.isEmpty else { break }
+                        buffer.append(chunk)
+                    } catch {
+                        break
+                    }
+                    while let newline = buffer.firstIndex(of: 0x0A) {
+                        let line = buffer.prefix(upTo: newline)
+                        buffer.removeSubrange(...newline)
+                        continuation.yield(String(decoding: line, as: UTF8.self))
+                    }
+                }
+                if !buffer.isEmpty {
+                    continuation.yield(String(decoding: buffer, as: UTF8.self))
+                }
+                continuation.finish()
+            }
         }
     }
 
